@@ -1,0 +1,18 @@
+[Unit]
+Description=Onuion SSHD PAM Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/onuion-sshd
+ExecStart=/usr/bin/python3 /opt/onuion-sshd/agent.py
+Restart=always
+RestartSec=2
+RuntimeDirectory=onuion-sshd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
