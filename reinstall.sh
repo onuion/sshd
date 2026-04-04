@@ -34,6 +34,11 @@ pip3 install -r requirements.txt --quiet
 sudo mkdir -p /opt/onuion-sshd
 sudo cp -r ./* /opt/onuion-sshd/
 
+cd /opt/onuion-sshd
+python3 -m venv venv
+/opt/onuion-sshd/venv/bin/pip install --upgrade pip
+/opt/onuion-sshd/venv/bin/pip install -r requirements.txt
+
 # 6. Setup and start the service
 sudo cp onuion-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
