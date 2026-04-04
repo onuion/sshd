@@ -39,6 +39,12 @@ pip install -r requirements.txt
 # Create the application directory
 sudo mkdir -p /opt/onuion-sshd
 sudo cp * /opt/onuion-sshd/
+
+# Create virtual environment
+cd /opt/onuion-sshd
+python3 -m venv venv
+/opt/onuion-sshd/venv/bin/pip install --upgrade pip
+/opt/onuion-sshd/venv/bin/pip install -r requirements.txt
 ```
 
 ### 3. Install Systemd Service
