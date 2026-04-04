@@ -43,9 +43,21 @@ def analyze_auth_request(username, ip, pam_type="auth"):
     decision = "continue_connection"
     blocked = False
 
-    if risk_score >= BLOCK_THRESHOLD:
+    # Check for specific risks and score threshold for 1-hour block
+    block_reasons = []
+    
+    # Rule 1: Special risks (ip_mismatch and rapid_ip_change)
+    if "ip_mismatch" in risks and "rapid_ip_change" in risks:
+        block_reasons.append("looks_ssh_scan_bot")
+        
+    # Rule 2: Score > 49
+    if risk_score > 49:
+        block_reasons.append("high_risk_score")
+
+    if block_reasons:
         decision = "close_connection"
-        blocked = maybe_block_ip(ip)
+        # Block for 1 hour (3600 seconds)
+        blocked = maybe_block_ip(ip, duration=3600)
     elif risk_score >= ALERT_THRESHOLD:
         decision = "continue_connection"
 
