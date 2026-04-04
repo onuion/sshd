@@ -99,6 +99,8 @@ osshd restart
 
 ## 📊 Logging
 
+![Onuion SSHD Logs](img.png)
+
 The agent outputs structured JSON logs to the system journal:
 
 ```json
