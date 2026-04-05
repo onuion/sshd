@@ -41,13 +41,15 @@ def analyze_auth_request(username, ip, pam_type="auth"):
 
     # IMPORTANT: Check if IP is already trusted based on previous successful logins
     is_trusted = state.is_ip_trusted(ip)
-    if is_trusted:
-        log_json({
-            "ts": datetime.utcnow().isoformat() + "Z",
-            "source": "onuion-sshd",
-            "message": f"IP {ip} is already trusted.",
-            "ip": ip
-        })
+    
+    log_json({
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "source": "onuion-sshd",
+        "message": f"Trust check for IP {ip}: {'TRUSTED' if is_trusted else 'NOT TRUSTED'}",
+        "ip": ip,
+        "username": username,
+        "is_trusted": is_trusted
+    })
 
     state.register_failed(ip, username, timestamp)
 
@@ -173,23 +175,32 @@ def tail_auth_log(state):
         "message": f"Starting log tailer on {AUTH_LOG_PATH}"
     })
 
-    try:
-        # Initial scan: Read last ~5000 lines (roughly 500kb) to populate initial trust state
-        trusted_count = 0
-        with open(AUTH_LOG_PATH, "r") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            # Seek back roughly 500kb
-            f.seek(max(0, size - 524288))
-            lines = f.readlines()
-            # Skip first line as it might be partial
-            if len(lines) > 1:
-                for line in lines[1:]:
+    def scan_file(path, limit_kb=1000):
+        """Helper to scan a file for trusted IPs."""
+        found = 0
+        if not os.path.exists(path):
+            return 0
+        try:
+            with open(path, "r") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - (limit_kb * 1024)))
+                lines = f.readlines()
+                # Skip first line if we jumped into the middle of the file
+                start_idx = 1 if size > (limit_kb * 1024) else 0
+                
+                for line in lines[start_idx:]:
                     parsed = parse_ssh_log_line(line)
                     if parsed and parsed["event"].startswith("accepted_"):
                         ip = normalize_ip(parsed["ip"])
                         if not state.is_ip_trusted(ip):
-                            trusted_count += 1
+                            found += 1
+                            log_json({
+                                "ts": datetime.utcnow().isoformat() + "Z",
+                                "source": "onuion-sshd",
+                                "message": f"Trusted IP added from history ({os.path.basename(path)}): {ip}",
+                                "ip": ip
+                            })
                         state.register_accepted(
                             ip=ip,
                             username=parsed["username"],
@@ -198,29 +209,46 @@ def tail_auth_log(state):
                             timestamp=parsed["timestamp"],
                             fingerprint=parsed.get("fingerprint")
                         )
-                    elif parsed and parsed["event"] == "failed_password":
-                        state.register_failed(normalize_ip(parsed["ip"]), parsed["username"], parsed["timestamp"])
+        except Exception as e:
+            log_json({"ts": datetime.utcnow().isoformat() + "Z", "source": "onuion-sshd", "level": "error", "message": f"Error scanning {path}: {e}"})
+        return found
+
+    try:
+        # Initial scan: Read current log and rotated log (.1)
+        total_trusted = 0
+        total_trusted += scan_file(AUTH_LOG_PATH + ".1", limit_kb=1000)
+        total_trusted += scan_file(AUTH_LOG_PATH, limit_kb=1000)
         
         log_json({
             "ts": datetime.utcnow().isoformat() + "Z",
             "source": "onuion-sshd",
-            "message": f"Initial log scan complete. Found {trusted_count} unique trusted IPs in history."
+            "message": f"Initial log scan complete. Found {total_trusted} trusted IPs in recent history."
         })
 
-        # Continues tailing from the end
+        # Continues tailing from the end of current log
         with open(AUTH_LOG_PATH, "r") as f:
             f.seek(0, os.SEEK_END)
             while True:
                 line = f.readline()
                 if not line:
                     time.sleep(0.1)
+                    # Check if file has been rotated (inode changed or size decreased)
+                    # For simplicity, we just check if size decreased or handle reopening occasionally
                     continue
 
                 parsed = parse_ssh_log_line(line)
                 if parsed:
+                    ip = normalize_ip(parsed["ip"])
                     if parsed["event"].startswith("accepted_"):
+                        if not state.is_ip_trusted(ip):
+                            log_json({
+                                "ts": datetime.utcnow().isoformat() + "Z",
+                                "source": "onuion-sshd",
+                                "message": f"New trusted IP detected: {ip}",
+                                "ip": ip
+                            })
                         state.register_accepted(
-                            ip=normalize_ip(parsed["ip"]),
+                            ip=ip,
                             username=parsed["username"],
                             session_id=parsed.get("session_id"),
                             auth_method=parsed.get("auth_method"),
@@ -228,7 +256,7 @@ def tail_auth_log(state):
                             fingerprint=parsed.get("fingerprint")
                         )
                     elif parsed["event"] == "failed_password":
-                        state.register_failed(normalize_ip(parsed["ip"]), parsed["username"], parsed["timestamp"])
+                        state.register_failed(ip, parsed["username"], parsed["timestamp"])
 
     except Exception as e:
         log_json({
