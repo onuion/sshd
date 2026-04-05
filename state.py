@@ -69,6 +69,12 @@ class SSHState:
         if fingerprint:
             user_entry["key_fingerprints"].append(fingerprint)
 
+    def is_ip_trusted(self, ip):
+        ip_entry = self.ip_state.get(ip)
+        if not ip_entry:
+            return False
+        return len(ip_entry["accepted_attempts"]) > 0
+
     def get_ip_data(self, ip):
         return self.ip_state.get(ip)
 

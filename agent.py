@@ -7,10 +7,11 @@ from datetime import datetime
 
 from onuion import analyze_risk
 
-from config import SOCKET_PATH, SOCKET_BACKLOG, BLOCK_THRESHOLD, ALERT_THRESHOLD
+from config import SOCKET_PATH, SOCKET_BACKLOG, BLOCK_THRESHOLD, ALERT_THRESHOLD, AUTH_LOG_PATH
 from state import SSHState
 from normalizer import build_session_data
 from enforcer import maybe_block_ip
+from parser import parse_ssh_log_line
 
 state = SSHState()
 
@@ -29,6 +30,9 @@ def analyze_auth_request(username, ip, pam_type="auth"):
         "session_id": f"ssh_{username}_{int(timestamp)}",
         "fingerprint": None,
     }
+
+    # IMPORTANT: Check if IP is already trusted based on previous successful logins
+    is_trusted = state.is_ip_trusted(ip)
 
     state.register_failed(ip, username, timestamp)
 
@@ -55,9 +59,15 @@ def analyze_auth_request(username, ip, pam_type="auth"):
         block_reasons.append("high_risk_score")
 
     if block_reasons:
-        decision = "close_connection"
-        # Block for 1 hour (3600 seconds)
-        blocked = maybe_block_ip(ip, duration=3600)
+        if is_trusted:
+            # Skip blocking for trusted IPs
+            decision = "continue_connection"
+            blocked = False
+            block_reasons.append("skipped_because_trusted")
+        else:
+            decision = "close_connection"
+            # Block for 1 hour (3600 seconds)
+            blocked = maybe_block_ip(ip, duration=3600)
     elif risk_score >= ALERT_THRESHOLD:
         decision = "continue_connection"
 
@@ -131,8 +141,82 @@ def cleanup_socket():
     if os.path.exists(SOCKET_PATH):
         os.remove(SOCKET_PATH)
 
+def tail_auth_log(state):
+    """Background thread to tail the SSH log and update state with successes/failures."""
+    if not os.path.exists(AUTH_LOG_PATH):
+        log_json({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "source": "onuion-sshd",
+            "level": "warning",
+            "message": f"Log file not found: {AUTH_LOG_PATH}. Trusted IP detection disabled."
+        })
+        return
+
+    log_json({
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "source": "onuion-sshd",
+        "message": f"Starting log tailer on {AUTH_LOG_PATH}"
+    })
+
+    try:
+        # Initial scan: Read last ~1000 lines to populate initial trust state
+        with open(AUTH_LOG_PATH, "r") as f:
+            # Simple way to get last N lines without reading everything
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            # Seek back roughly 100kb which is safe for ~1000 lines
+            f.seek(max(0, size - 102400))
+            lines = f.readlines()
+            # Skip first line as it might be partial
+            if len(lines) > 1:
+                for line in lines[1:]:
+                    parsed = parse_ssh_log_line(line)
+                    if parsed and parsed["event"].startswith("accepted_"):
+                         state.register_accepted(
+                            ip=parsed["ip"],
+                            username=parsed["username"],
+                            session_id=parsed.get("session_id"),
+                            auth_method=parsed.get("auth_method"),
+                            timestamp=parsed["timestamp"],
+                            fingerprint=parsed.get("fingerprint")
+                        )
+
+        # Continues tailing from the end
+        with open(AUTH_LOG_PATH, "r") as f:
+            f.seek(0, os.SEEK_END)
+            while True:
+                line = f.readline()
+                if not line:
+                    time.sleep(0.1)
+                    continue
+
+                parsed = parse_ssh_log_line(line)
+                if parsed:
+                    if parsed["event"].startswith("accepted_"):
+                        state.register_accepted(
+                            ip=parsed["ip"],
+                            username=parsed["username"],
+                            session_id=parsed.get("session_id"),
+                            auth_method=parsed.get("auth_method"),
+                            timestamp=parsed["timestamp"],
+                            fingerprint=parsed.get("fingerprint")
+                        )
+                    elif parsed["event"] == "failed_password":
+                        state.register_failed(parsed["ip"], parsed["username"], parsed["timestamp"])
+
+    except Exception as e:
+        log_json({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "source": "onuion-sshd",
+            "level": "error",
+            "message": f"Log tailer error: {e}"
+        })
+
 def run_server():
     cleanup_socket()
+
+    # Start log tailer thread
+    threading.Thread(target=tail_auth_log, args=(state,), daemon=True).start()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
