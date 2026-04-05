@@ -11,7 +11,7 @@ INVALID_USER_RE = re.compile(
 )
 
 ACCEPTED_RE = re.compile(
-    r"Accepted (?P<method>[\w-]+) for (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+)( ssh\d*)?(?P<rest>.*)"
+    r"Accepted (?P<method>[\w\-/]+) for (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+)( ssh\d*)?(?P<rest>.*)"
 )
 
 DISCONNECTED_RE = re.compile(
