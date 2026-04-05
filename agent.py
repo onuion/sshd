@@ -15,10 +15,18 @@ from parser import parse_ssh_log_line
 
 state = SSHState()
 
+def normalize_ip(ip):
+    if not ip:
+        return "unknown"
+    if ip.startswith("::ffff:"):
+        return ip[7:]
+    return ip
+
 def log_json(data):
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
 def analyze_auth_request(username, ip, pam_type="auth"):
+    ip = normalize_ip(ip)
     timestamp = time.time()
 
     event = {
@@ -33,6 +41,13 @@ def analyze_auth_request(username, ip, pam_type="auth"):
 
     # IMPORTANT: Check if IP is already trusted based on previous successful logins
     is_trusted = state.is_ip_trusted(ip)
+    if is_trusted:
+        log_json({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "source": "onuion-sshd",
+            "message": f"IP {ip} is already trusted.",
+            "ip": ip
+        })
 
     state.register_failed(ip, username, timestamp)
 
@@ -159,27 +174,38 @@ def tail_auth_log(state):
     })
 
     try:
-        # Initial scan: Read last ~1000 lines to populate initial trust state
+        # Initial scan: Read last ~5000 lines (roughly 500kb) to populate initial trust state
+        trusted_count = 0
         with open(AUTH_LOG_PATH, "r") as f:
-            # Simple way to get last N lines without reading everything
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            # Seek back roughly 100kb which is safe for ~1000 lines
-            f.seek(max(0, size - 102400))
+            # Seek back roughly 500kb
+            f.seek(max(0, size - 524288))
             lines = f.readlines()
             # Skip first line as it might be partial
             if len(lines) > 1:
                 for line in lines[1:]:
                     parsed = parse_ssh_log_line(line)
                     if parsed and parsed["event"].startswith("accepted_"):
-                         state.register_accepted(
-                            ip=parsed["ip"],
+                        ip = normalize_ip(parsed["ip"])
+                        if not state.is_ip_trusted(ip):
+                            trusted_count += 1
+                        state.register_accepted(
+                            ip=ip,
                             username=parsed["username"],
                             session_id=parsed.get("session_id"),
                             auth_method=parsed.get("auth_method"),
                             timestamp=parsed["timestamp"],
                             fingerprint=parsed.get("fingerprint")
                         )
+                    elif parsed and parsed["event"] == "failed_password":
+                        state.register_failed(normalize_ip(parsed["ip"]), parsed["username"], parsed["timestamp"])
+        
+        log_json({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "source": "onuion-sshd",
+            "message": f"Initial log scan complete. Found {trusted_count} unique trusted IPs in history."
+        })
 
         # Continues tailing from the end
         with open(AUTH_LOG_PATH, "r") as f:
@@ -194,7 +220,7 @@ def tail_auth_log(state):
                 if parsed:
                     if parsed["event"].startswith("accepted_"):
                         state.register_accepted(
-                            ip=parsed["ip"],
+                            ip=normalize_ip(parsed["ip"]),
                             username=parsed["username"],
                             session_id=parsed.get("session_id"),
                             auth_method=parsed.get("auth_method"),
@@ -202,7 +228,7 @@ def tail_auth_log(state):
                             fingerprint=parsed.get("fingerprint")
                         )
                     elif parsed["event"] == "failed_password":
-                        state.register_failed(parsed["ip"], parsed["username"], parsed["timestamp"])
+                        state.register_failed(normalize_ip(parsed["ip"]), parsed["username"], parsed["timestamp"])
 
     except Exception as e:
         log_json({

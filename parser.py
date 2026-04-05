@@ -3,19 +3,15 @@ import time
 import uuid
 
 FAILED_PASSWORD_RE = re.compile(
-    r"Failed password for (invalid user )?(?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+) ssh2"
+    r"Failed password for (invalid user )?(?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+)( ssh\d*)?"
 )
 
 INVALID_USER_RE = re.compile(
     r"Invalid user (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+)"
 )
 
-ACCEPTED_PASSWORD_RE = re.compile(
-    r"Accepted password for (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+) ssh2"
-)
-
-ACCEPTED_PUBLICKEY_RE = re.compile(
-    r"Accepted publickey for (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+) ssh2(?P<rest>.*)"
+ACCEPTED_RE = re.compile(
+    r"Accepted (?P<method>[\w-]+) for (?P<user>[\w.\-@]+) from (?P<ip>[0-9a-fA-F:.]+) port (?P<port>\d+)( ssh\d*)?(?P<rest>.*)"
 )
 
 DISCONNECTED_RE = re.compile(
@@ -57,31 +53,19 @@ def parse_ssh_log_line(line: str):
             "port": int(m.group("port")),
         }
 
-    m = ACCEPTED_PASSWORD_RE.search(line)
+    m = ACCEPTED_RE.search(line)
     if m:
-        return {
-            "event": "accepted_password",
-            "timestamp": now,
-            "username": m.group("user"),
-            "ip": m.group("ip"),
-            "port": int(m.group("port")),
-            "auth_method": "password",
-            "session_id": f"ssh_{uuid.uuid4().hex}",
-            "fingerprint": None,
-        }
-
-    m = ACCEPTED_PUBLICKEY_RE.search(line)
-    if m:
+        method = m.group("method").lower()
         rest = m.group("rest")
         return {
-            "event": "accepted_publickey",
+            "event": f"accepted_{method}",
             "timestamp": now,
             "username": m.group("user"),
             "ip": m.group("ip"),
             "port": int(m.group("port")),
-            "auth_method": "publickey",
+            "auth_method": method,
             "session_id": f"ssh_{uuid.uuid4().hex}",
-            "fingerprint": extract_fingerprint(rest),
+            "fingerprint": extract_fingerprint(rest) if method == "publickey" else None,
         }
 
     m = DISCONNECTED_RE.search(line)
