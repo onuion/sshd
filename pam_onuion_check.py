@@ -34,8 +34,8 @@ def main():
         sys.exit(0)
 
     except Exception as e:
-        print(f"[onuion-pam] fail-open error: {e}", file=sys.stderr)
-        sys.exit(0)
+        print(f"[onuion-pam] fail-closed error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

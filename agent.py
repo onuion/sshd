@@ -274,7 +274,7 @@ def run_server():
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
-    os.chmod(SOCKET_PATH, 0o666)
+    os.chmod(SOCKET_PATH, 0o600)  # Only root can access the socket
     server.listen(SOCKET_BACKLOG)
 
     log_json({
